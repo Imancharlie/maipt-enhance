@@ -10,6 +10,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "https://mipt.pythonanywhere.com",
+        "https://maipt.kodin.co.tz",
+        "https://maipt-enhance.kodin.co.tz",
         "http://localhost:8000",
         "http://127.0.0.1:8000",
         "http://localhost:8010",
