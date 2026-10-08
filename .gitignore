@@ -1,0 +1,28 @@
+# Environment / secrets - NEVER commit
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtualenv
+venv/
+.venv/
+
+# Testing / cache
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Runtime logs
+*.log
+ai_service.out.log
+ai_service.err.log
+
+# OS
+.DS_Store
+Thumbs.db
