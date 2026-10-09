@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     
     # Session Settings
     SESSION_TTL_MINUTES: int = 120  # 2 hours
+    # Sessions are flushed here after every change so restarts don't wipe chats.
+    SESSION_STORE_PATH: str = "data/sessions.json"
     
     # Analytics
     ENABLE_ANONYMIZED_LOGGING: bool = True

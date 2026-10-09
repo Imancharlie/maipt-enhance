@@ -23,6 +23,9 @@ htmlcov/
 ai_service.out.log
 ai_service.err.log
 
+# Runtime session store
+data/
+
 # OS
 .DS_Store
 Thumbs.db
