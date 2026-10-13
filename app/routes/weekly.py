@@ -3,13 +3,13 @@ import re
 from fastapi import APIRouter, Depends
 from app.auth import verify_api_key
 from app.schemas import AnswerRequest, EnhancementRequest, EnhancementResponse
-from app.ai import READY_FALLBACK_MESSAGE, _clean_suggestions, claude_service
+from app.ai import READY_FALLBACK_MESSAGE, _clean_suggestions, attach_diagram_note, claude_service
 from app.session import session_manager
 from app.analytics import analytics_tracker
 
 router = APIRouter()
 
-KICKOFF_MESSAGE = "Please start enhancing my weekly report. Ask me your first questions."
+KICKOFF_MESSAGE = "I just opened my report for this week."
 CONTINUE_MESSAGE = ("Please continue enhancing my weekly report using everything from our "
                     "earlier conversation above.")
 CONFIRM_MESSAGE = "Yes, enhance my report now."
@@ -170,6 +170,7 @@ async def handle_answer(
             session_id=session_id,
             enhanced_data=session["enhanced_data"],
             ai_message=session.get("completion_message", COMPLETION_MESSAGE),
+            diagram_suggestions=session.get("diagram_suggestions"),
             is_complete=True,
             week_number=session["week_number"],
             user_id=session["user_id"]
@@ -198,7 +199,7 @@ async def handle_answer(
     if session.get("status") == "in_progress" and answer_text.lower() == "enhance with what you have":
         # Force Claude to generate enhancement with available data
         history = list(session["conversation_history"])
-        history.append({"role": "user", "content": "Please enhance my report with the information available, even if some details are missing."})
+        history.append({"role": "user", "content": "Please enhance my report with the information available."})
         return await run_turn(session_id, history)
 
     # If user requests enhancement while still in question phase, offer to enhance with available data
@@ -227,19 +228,23 @@ def finalize_session(
     """Complete a session with the drafted report (no extra Claude call)."""
     history = list(session.get("conversation_history") or [])
     history.append({"role": "user", "content": user_message})
+    completion = attach_diagram_note(
+        COMPLETION_MESSAGE, session.get("diagram_suggestions")
+    )
     session_manager.update_session(
         session_id,
         conversation_history=history,
         status="completed",
         enhanced_data=enhanced_data,
         pending_enhanced_data=None,
-        completion_message=COMPLETION_MESSAGE
+        completion_message=completion
     )
     return EnhancementResponse(
         success=True,
         session_id=session_id,
         enhanced_data=enhanced_data,
-        ai_message=COMPLETION_MESSAGE,
+        ai_message=completion,
+        diagram_suggestions=session.get("diagram_suggestions"),
         is_complete=True,
         week_number=session["week_number"],
         user_id=session["user_id"]
@@ -296,17 +301,20 @@ async def run_turn(session_id: str, history: list) -> EnhancementResponse:
         )
 
     # "ready": enough data gathered, the draft waits for the user's go-ahead.
+    diagrams = result.get("diagram_suggestions")
     session_manager.update_session(
         session_id,
         conversation_history=history,
         status="ready",
-        pending_enhanced_data=result["enhanced_data"]
+        pending_enhanced_data=result["enhanced_data"],
+        diagram_suggestions=diagrams
     )
     return EnhancementResponse(
         success=True,
         session_id=session_id,
         question=None,
-        ai_message=result["confirmation_message"],
+        ai_message=attach_diagram_note(result["confirmation_message"], diagrams),
+        diagram_suggestions=diagrams,
         is_complete=False,
         ready_to_enhance=True,
         suggestions=result.get("suggestions"),
@@ -378,6 +386,7 @@ def pending_response(session_id: str, session: dict) -> EnhancementResponse:
             success=True,
             enhanced_data=session["enhanced_data"],
             ai_message=session.get("completion_message", COMPLETION_MESSAGE),
+            diagram_suggestions=session.get("diagram_suggestions"),
             is_complete=True,
             **base
         )
@@ -399,15 +408,18 @@ def pending_response(session_id: str, session: dict) -> EnhancementResponse:
             success=True,
             enhanced_data=parsed.get("enhanced_data") or {},
             ai_message=session.get("completion_message", COMPLETION_MESSAGE),
+            diagram_suggestions=session.get("diagram_suggestions"),
             is_complete=True,
             **base
         )
 
     if parsed and parsed.get("type") == "ready":
         confirmation = (parsed.get("confirmation_message") or "").strip()
+        diagrams = session.get("diagram_suggestions")
         return EnhancementResponse(
             success=True,
-            ai_message=confirmation or READY_FALLBACK_MESSAGE,
+            ai_message=attach_diagram_note(confirmation or READY_FALLBACK_MESSAGE, diagrams),
+            diagram_suggestions=diagrams,
             is_complete=False,
             ready_to_enhance=True,
             suggestions=_clean_suggestions(parsed.get("suggestions")),
@@ -428,9 +440,11 @@ def pending_response(session_id: str, session: dict) -> EnhancementResponse:
 
     draft = session.get("pending_enhanced_data")
     if session.get("status") == "ready" and isinstance(draft, dict) and draft:
+        diagrams = session.get("diagram_suggestions")
         return EnhancementResponse(
             success=True,
-            ai_message=READY_FALLBACK_MESSAGE,
+            ai_message=attach_diagram_note(READY_FALLBACK_MESSAGE, diagrams),
+            diagram_suggestions=diagrams,
             is_complete=False,
             ready_to_enhance=True,
             **base

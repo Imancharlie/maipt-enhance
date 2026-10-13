@@ -13,7 +13,39 @@ READY_FALLBACK_MESSAGE = (
 )
 
 MAX_SUGGESTIONS = 5
+MAX_DIAGRAM_SUGGESTIONS = 3
 MAX_DAILY_DESCRIPTION_CHARS = 500
+# Recent turns sent to Claude. Older student answers are folded into one short note.
+MAX_RECENT_MESSAGES = 10
+
+# Static instructions. Kept short because they are sent on every turn.
+CONVERSATION_RULES = """You are Mr PT, the student's personal Supervisor for university practical training (PT). Guide this weekly report with them, prepare it together, and remind them of important points about their PT. If they ask you to clarify a machine, tool, or step, explain it so they can implement it.
+
+Reply with one JSON object only. No markdown.
+
+Still gathering facts:
+{"type":"question","ai_message":"...","question":"1. ...\\n2. ..."}
+Add "suggestions" only for a real choice of 2-4 short answers. Otherwise omit it.
+
+They ask to enhance while facts are missing: stay on type question, name what is missing, suggestions ["Enhance with what you have","Provide missing details"].
+They then agree to enhance with what you have: type ready, using only facts you actually have.
+
+Enough real facts to write the report:
+{"type":"ready","confirmation_message":"...","diagram_suggestions":["You may attach ..."],"enhanced_data":{"main_job_title":"","daily_reports":[{"day":"","date":"","description":"","hours_worked":0}],"operations":[{"step_number":1,"operation_description":"","tools_used":""}]}}
+diagram_suggestions: exactly 3 short lines for this main job. Do not put them in the report text. Never use type complete.
+
+Facts: use only REPORT and what the student said. Never invent hours, tools, days, or results.
+First reply (no earlier reply from you): ai_message is a natural introduction in your own words. Do not reuse a fixed script. Always the same points, fitted to what they just said and to this week's job or company: you are Mr PT, their personal Supervisor; you will go through this week's report with them and prepare it together; you remind them of important things about their PT; they can ask you to clarify something so they can implement it. Then put the first questions in question.
+Later replies: do not introduce yourself again. ai_message is one short sentence. If they asked you to clarify something, ai_message is that short reminder, and question connects it to the report (confirm the tool, the step, or the next missing fact). The report still moves forward the same way.
+question: 1-3 numbered lines. Never re-ask a known fact.
+enhanced_data: same days and dates as REPORT. hours_worked is their number, or 0 only if they were off. Each daily description 300-500 characters. 4-6 operations with only step_number, operation_description, tools_used. Keep their job title.
+"""
+
+_SYNTHETIC_USER_PREFIXES = (
+    "please start enhancing",
+    "i just opened my report",
+    "please continue enhancing",
+)
 
 
 def _clean_suggestions(raw) -> list:
@@ -23,6 +55,100 @@ def _clean_suggestions(raw) -> list:
     items = [str(s).strip() for s in raw if isinstance(s, (str, int, float))]
     items = [s for s in items if s][:MAX_SUGGESTIONS]
     return items or None
+
+
+def _clean_diagram_suggestions(raw) -> list:
+    """Keep a few short attachment ideas. Local display only, no extra model call."""
+    if not isinstance(raw, list):
+        return None
+    items = []
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        text = " ".join(item.split())
+        if text:
+            items.append(text[:120])
+        if len(items) == MAX_DIAGRAM_SUGGESTIONS:
+            break
+    return items or None
+
+
+def attach_diagram_note(message: str, suggestions) -> str:
+    """Append the attachment ideas to the message the student already sees."""
+    items = _clean_diagram_suggestions(suggestions)
+    if not items:
+        return message
+    lines = "\n".join(f"- {item}" for item in items)
+    return f"{(message or '').rstrip()}\n\nYou may attach:\n{lines}"
+
+
+def _is_synthetic_user(text: str) -> bool:
+    lowered = " ".join((text or "").lower().split())
+    return any(lowered.startswith(prefix) for prefix in _SYNTHETIC_USER_PREFIXES)
+
+
+def compact_assistant(content: str) -> str:
+    """Drop stored JSON (especially drafted reports) before the next model call."""
+    try:
+        parsed = _parse_json(content)
+    except ValueError:
+        return " ".join((content or "").split())[:400]
+
+    kind = parsed.get("type")
+    if kind == "question":
+        ai_message = (parsed.get("ai_message") or "").strip()
+        question = (parsed.get("question") or "").strip()
+        return f"{ai_message}\n{question}".strip()[:500]
+    if kind in ("ready", "complete"):
+        return ((parsed.get("confirmation_message") or "Draft ready.").strip())[:300]
+    return " ".join((content or "").split())[:400]
+
+
+def history_for_model(conversation_history: list) -> list:
+    """Short transcript for Claude. The full chat stays stored for the student."""
+    compact = []
+    for message in conversation_history or []:
+        role = message.get("role")
+        content = message.get("content")
+        if role not in ("user", "assistant") or not isinstance(content, str) or not content.strip():
+            continue
+        if role == "assistant":
+            content = compact_assistant(content)
+        else:
+            content = content.strip()
+        if content:
+            compact.append({"role": role, "content": content})
+
+    if len(compact) <= MAX_RECENT_MESSAGES:
+        return _ensure_user_first(compact)
+
+    recent = compact[-MAX_RECENT_MESSAGES:]
+    if recent[0]["role"] != "user":
+        recent = compact[-(MAX_RECENT_MESSAGES + 1):]
+    older = compact[:len(compact) - len(recent)]
+    facts = []
+    for message in older:
+        if message["role"] != "user" or _is_synthetic_user(message["content"]):
+            continue
+        facts.append(" ".join(message["content"].split())[:160])
+    if facts:
+        note = "Earlier student answers (do not ask again): " + " | ".join(facts)
+        if len(note) > 900:
+            note = note[:900].rstrip()
+        if recent[0]["role"] == "user":
+            recent[0] = {
+                "role": "user",
+                "content": note + "\n\n" + recent[0]["content"],
+            }
+        else:
+            recent = [{"role": "user", "content": note}] + recent
+    return _ensure_user_first(recent)
+
+
+def _ensure_user_first(messages: list) -> list:
+    if messages and messages[0]["role"] != "user":
+        return [{"role": "user", "content": "Continue this week's report."}] + messages
+    return messages
 
 
 def _parse_json(text: str) -> dict:
@@ -113,8 +239,7 @@ class ClaudeService:
         try:
             prompt = self._create_enhancement_prompt(data, instructions)
             text, tokens_used = self._create_message(
-                "You are a report enhancement assistant. Return only valid JSON, "
-                "never markdown code fences.",
+                "Return only valid JSON, no markdown.",
                 [{"role": "user", "content": prompt}]
             )
             enhanced_data = _parse_json(text)
@@ -142,25 +267,19 @@ class ClaudeService:
         try:
             system = self._create_conversation_system_prompt(data)
 
-            messages = [
-                {"role": m["role"], "content": m["content"]}
-                for m in conversation_history
-                if m.get("role") in ("user", "assistant") and m.get("content")
-            ]
+            messages = history_for_model(conversation_history)
             if not messages:
-                messages = [{"role": "user", "content": "Please start enhancing my weekly report."}]
+                messages = [{"role": "user", "content": "I just opened my report for this week."}]
 
-            # Check if the last user message is a request to enhance with available data
             last_user_msg = None
-            for m in reversed(messages):
-                if m.get("role") == "user":
-                    last_user_msg = m.get("content", "").lower()
+            for message in reversed(messages):
+                if message.get("role") == "user":
+                    last_user_msg = message.get("content", "").lower()
                     break
 
-            # If user explicitly requests enhancement with available data, add instruction to system
             if last_user_msg and ("enhance with what you have" in last_user_msg or
                                    "enhance my report with the information available" in last_user_msg):
-                system += "\n\nIMPORTANT: The user has requested to enhance with available information. Switch to 'ready' type and provide enhanced_data using whatever information you have, even if incomplete."
+                system += "\nReply type ready now, using only the facts you have."
 
             text, tokens_used = self._create_message(system, messages)
             parsed = _parse_json(text)
@@ -179,6 +298,9 @@ class ClaudeService:
                     "type": "ready",
                     "enhanced_data": enhanced_data,
                     "confirmation_message": confirmation or READY_FALLBACK_MESSAGE,
+                    "diagram_suggestions": _clean_diagram_suggestions(
+                        parsed.get("diagram_suggestions")
+                    ),
                     "raw": text,
                     "tokens_used": tokens_used
                 }
@@ -206,12 +328,11 @@ class ClaudeService:
 
     def _render_report_data(self, data: WeeklyReportData) -> str:
         lines = [
-            f"Student Program: {data.user_program or 'Not specified'}",
-            f"Company: {data.company_name or 'Not specified'}",
-            f"Week Number: {data.week_number}",
-            f"Main Job Title: {data.main_job_title or 'Not specified'}",
-            "",
-            "Daily Reports:"
+            f"Program: {data.user_program or '-'}",
+            f"Company: {data.company_name or '-'}",
+            f"Week: {data.week_number}",
+            f"Main job: {data.main_job_title or '-'}",
+            "Days:"
         ]
         empty_days = []
         unclear_days = []
@@ -221,151 +342,55 @@ class ClaudeService:
             if description:
                 desc_text = description
             else:
-                desc_text = "NOTHING RECORDED YET - ask the user what they did this day"
+                desc_text = "empty"
                 empty_days.append(str(day.get('day')))
             if description and len(description.split()) <= 6:
                 unclear_days.append(str(day.get('day')))
-            if hours in (None, ''):
-                hours_text = "hours NOT recorded - ask the user"
-            else:
-                hours_text = f"{hours} hours"
+            hours_text = "no hours" if hours in (None, "") else f"{hours}h"
             lines.append(f"- {day.get('day')} ({day.get('date')}): {desc_text} [{hours_text}]")
 
         if not data.daily_reports:
-            lines.append("- NO DAILY ENTRIES AT ALL - the report is empty")
+            lines.append("- empty")
 
-        lines.append("")
-        lines.append("Main Job Operations:")
+        lines.append("Operations:")
         if data.operations:
             for op in data.operations:
                 lines.append(
-                    f"Step {op.get('step_number')}: {op.get('operation_description')} "
-                    f"(Tools: {op.get('tools_used')})"
+                    f"{op.get('step_number')}. {op.get('operation_description')} "
+                    f"(tools: {op.get('tools_used')})"
                 )
         else:
-            lines.append("NO OPERATIONS RECORDED - ask the user about the steps they followed")
+            lines.append("- none")
 
         if empty_days:
-            lines.append("")
-            lines.append(
-                "Days with no data (you MUST ask the user about these before enhancing): "
-                + ", ".join(empty_days)
-            )
+            lines.append("Missing days: " + ", ".join(empty_days))
         if unclear_days:
-            lines.append(
-                "Days with very short/vague descriptions worth expanding: "
-                + ", ".join(unclear_days)
-            )
+            lines.append("Vague days: " + ", ".join(unclear_days))
 
         if data.additional_instructions:
-            lines.append("")
-            lines.append(f"Additional Instructions: {data.additional_instructions}")
+            extra = " ".join(data.additional_instructions.split())
+            if len(extra) > 400:
+                extra = extra[:400].rstrip() + "..."
+            lines.append(f"Notes: {extra}")
 
         return "\n".join(lines)
 
     def _create_enhancement_prompt(self, data: WeeklyReportData, instructions: str) -> str:
-        prompt = f"""
-You are enhancing a weekly report for industrial training.
-
-{self._render_report_data(data)}
-"""
+        prompt = f"Enhance this weekly PT report. Keep the days. Daily descriptions 300-500 characters. 4-6 operations.\n\n{self._render_report_data(data)}\n"
         if instructions:
-            prompt += f"\nAdditional Instructions: {instructions}\n"
-
-        prompt += """
-Enhance this report by:
-1. Improving descriptions to be more professional and technical (STRICT LIMIT: 300-500 characters per daily description, NEVER exceed 500 characters)
-2. Adding relevant technical details where appropriate
-3. Improving operation descriptions to be more specific
-4. Maintaining the original structure
-
-Return ONLY valid JSON in this format:
-{
-    "daily_reports": [
-        {"day": "Monday", "description": "enhanced description", "hours_worked": 8.0},
-        ...
-    ],
-    "operations": [
-        {"step_number": 1, "operation_description": "enhanced", "tools_used": "enhanced"},
-        ...
-    ],
-    "main_job_title": "enhanced title"
-}
-"""
+            extra = " ".join(instructions.split())
+            if len(extra) > 400:
+                extra = extra[:400].rstrip() + "..."
+            prompt += f"\nNotes: {extra}\n"
+        prompt += (
+            '\nReturn JSON only: {"main_job_title":"","daily_reports":'
+            '[{"day":"","description":"","hours_worked":0}],'
+            '"operations":[{"step_number":1,"operation_description":"","tools_used":""}]}'
+        )
         return prompt
 
     def _create_conversation_system_prompt(self, data: WeeklyReportData) -> str:
-        return f"""You are helping a student enhance their weekly industrial training report through a chat.
-
-REPORT DATA:
-{self._render_report_data(data)}
-
-YOUR JOB
-1. Find everything missing or unclear in the report: empty days, missing hours, vague descriptions,
-   outcomes and results, tools and equipment used, tests or checks done, problems solved, feedback or
-   ratings from the supervisor, and the main job steps.
-2. Collect it from the user with short questions. Never invent, guess, or assume anything - only use
-   facts the user told you or facts already present in REPORT DATA above.
-3. As soon as you can write the whole report from real information only, say that you have enough
-   information to enhance the report without guessing, and WAIT for the user's go-ahead.
-
-QUESTION STYLE
-- Ask 1 to 3 questions in one turn when several things are missing; keep the turn short.
-- Number the questions so they are easy to answer: each question on its own line starting with
-  "1.", then "2.", then "3." (use a real line break between them).
-- In "ai_message" write only one short friendly sentence.
-- "suggestions" is OPTIONAL and off by default: include it ONLY when the question is a genuine
-  closed choice with 2-4 short, tappable answers (for example: day off / worked / no hours recorded,
-  yes / no). For open questions such as "what did you do on Wednesday?" or "how many hours did you
-  work?" leave "suggestions" out entirely. Never add suggestions to a "ready" response.
-- If REPORT DATA is empty, build the whole report through the chat: ask the user what they did on
-  each day of the week (Monday to Friday), then about the main job, the steps and the tools used.
-- Never re-ask about something you already know from REPORT DATA or from earlier answers.
-- Stay on topic: only ask things that improve this specific weekly report.
-
-HANDLING PREMATURE ENHANCEMENT REQUESTS
-- If the user asks to "enhance the report", "prepare the report", "create the report", or similar
-  while you still have questions, acknowledge their request but explain what information is still
-  missing.
-- Then offer them the option to enhance with what you have: "Would you like me to enhance with the
-  information available, or provide the missing details first?"
-- For such cases, include "suggestions": ["Enhance with what you have", "Provide missing details"]
-- DO NOT switch to "ready" type yet - stay in "question" type but with this specific question and
-  the two suggestions above.
-- If the user then says "Enhance with what you have" or "Please enhance my report with the information
-  available", switch to "ready" type and provide the enhanced_data using whatever information you have,
-  even if some details are missing. Mark this in your confirmation message.
-
-RESPONSE FORMAT - STRICT JSON ONLY, no markdown fences, no commentary, exactly one of:
-
-If you still need information:
-{{"type":"question","question":"<the questions, numbered, each on its own line, e.g. 1. What did you do on Wednesday?<newline>2. How many hours did you work?>","ai_message":"<one short friendly sentence>"}}
-
-Only for a real multiple-choice question, add suggestions as well:
-{{"type":"question","question":"...","ai_message":"...","suggestions":["<short option 1>","<short option 2>"]}}
-
-When the user requests enhancement prematurely (missing info):
-{{"type":"question","question":"I still need some information to complete your report: <list what's missing>. Would you like me to enhance with what's available, or provide the missing details first?","ai_message":"<one short friendly sentence>","suggestions":["Enhance with what you have","Provide missing details"]}}
-
-When the user confirms "Enhance with what you have" or similar (even with missing info):
-{{"type":"ready","confirmation_message":"I'll enhance your report with the information available. Some details may be marked as incomplete. Please review and you can always provide more details later.","enhanced_data":{{"main_job_title":"<enhanced title>","daily_reports":[{{"day":"Monday","date":"<keep the original date>","description":"<enhanced description, professional and technical, STRICT LIMIT 300-500 characters>","hours_worked":8.0}}],"operations":[{{"step_number":1,"operation_description":"<enhanced step>","tools_used":"<tools used>"}}]}}}}
-
-When you have everything you need (and NOT before):
-{{"type":"ready","confirmation_message":"<plainly say you have enough information to enhance the report without guessing, then ask for the user's go-ahead>","enhanced_data":{{"main_job_title":"<enhanced title>","daily_reports":[{{"day":"Monday","date":"<keep the original date>","description":"<enhanced description, professional and technical, STRICT LIMIT 300-500 characters>","hours_worked":8.0}}],"operations":[{{"step_number":1,"operation_description":"<enhanced step>","tools_used":"<tools used>"}}]}}}}
-
-NEVER return "complete" while chatting: the report is only saved after the user presses the
-enhance button.
-
-RULES FOR enhanced_data:
-- Keep the SAME days and dates that appear in REPORT DATA; do not add or remove days.
-- hours_worked must be a number: keep the hours the user gave, and use 0 only when the user said
-  the day was off or they were absent. Never make up hours.
-- Enhance descriptions to be professional and technical (STRICT LIMIT: 300-500 characters per daily description, NEVER exceed 500 characters). Count characters carefully and stay within limit.
-- Provide 4-6 operations covering the main job systematically and sequentially.
-- Each operation object must contain ONLY: step_number, operation_description, tools_used.
-- main_job_title: keep the user's title if provided (make it more specific if useful),
-  otherwise suggest one based on the daily work.
-"""
+        return f"{CONVERSATION_RULES}\nREPORT:\n{self._render_report_data(data)}"
 
 
 claude_service = ClaudeService()

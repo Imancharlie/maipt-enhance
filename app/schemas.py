@@ -36,6 +36,7 @@ class EnhancementResponse(BaseModel):
     is_complete: bool = False  # Whether enhancement is complete
     ready_to_enhance: bool = False  # AI has enough data and awaits the user's go-ahead
     suggestions: Optional[List[str]] = None  # Quick reply options for the current question
+    diagram_suggestions: Optional[List[str]] = None  # Optional attachments for this main job
     week_number: Optional[int] = None  # Week tied to the session
     user_id: Optional[int] = None  # Owner of the session (tracking/verification)
 
