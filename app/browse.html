@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MiPT chats</title>
+  <style>
+    :root {
+      --paper: #f3efe6;
+      --ink: #1c1915;
+      --muted: #6d655c;
+      --line: #ddd4c6;
+      --green: #1e5c40;
+      --green-deep: #143d2b;
+      --card: #fffdf8;
+      --user: #1e5c40;
+      --shadow: 0 16px 40px rgba(28, 25, 21, 0.08);
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      font-family: Georgia, "Iowan Old Style", "Palatino Linotype", serif;
+      color: var(--ink);
+      background: var(--paper);
+    }
+    button, input { font-family: "Segoe UI", sans-serif; }
+    .login {
+      min-height: 100%;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+    }
+    .card {
+      width: min(420px, 100%);
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 32px 28px;
+      box-shadow: var(--shadow);
+    }
+    h1 { font-size: 32px; margin: 0 0 8px; font-weight: 600; }
+    .lede { margin: 0 0 24px; color: var(--muted); line-height: 1.45; }
+    label { display: block; font-family: "Segoe UI", sans-serif; font-size: 13px; margin-bottom: 6px; }
+    input {
+      width: 100%;
+      border: 1px solid var(--line);
+      background: #fff;
+      border-radius: 10px;
+      padding: 12px 14px;
+      font-size: 16px;
+      margin-bottom: 14px;
+    }
+    input:focus { outline: 2px solid #c9deD2; border-color: var(--green); }
+    button.primary, button.ghost {
+      border: 0;
+      border-radius: 10px;
+      padding: 11px 14px;
+      cursor: pointer;
+    }
+    button.primary { background: var(--green); color: white; width: 100%; font-size: 16px; }
+    button.primary:hover { background: var(--green-deep); }
+    button.ghost { background: transparent; color: var(--ink); border: 1px solid var(--line); }
+    .error { color: #8d2b2b; min-height: 1.2em; font-family: "Segoe UI", sans-serif; font-size: 14px; }
+    .app { display: none; height: 100%; grid-template-rows: auto 1fr; }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--line);
+      background: var(--card);
+    }
+    header strong { font-size: 20px; }
+    .workspace { display: grid; grid-template-columns: 320px 1fr; min-height: 0; }
+    aside {
+      border-right: 1px solid var(--line);
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      background: #faf7f1;
+    }
+    .filters { padding: 12px; border-bottom: 1px solid var(--line); }
+    .filters input { margin: 0; }
+    .list { overflow: auto; }
+    .item {
+      width: 100%;
+      text-align: left;
+      background: transparent;
+      border: 0;
+      border-bottom: 1px solid var(--line);
+      padding: 14px 14px 12px;
+      cursor: pointer;
+    }
+    .item.active { background: #e7f2eb; }
+    .item .top { display: flex; justify-content: space-between; gap: 8px; font-family: "Segoe UI", sans-serif; font-size: 13px; }
+    .item .preview { margin: 6px 0 0; color: var(--muted); font-size: 14px; line-height: 1.35; }
+    .status {
+      font-family: "Segoe UI", sans-serif;
+      font-size: 11px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      border-radius: 999px;
+      padding: 2px 8px;
+      background: #efe8dc;
+    }
+    .status.completed { background: #d9efe3; color: var(--green-deep); }
+    .status.in_progress { background: #f3e4c4; }
+    main { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+    .thread-head { padding: 16px 22px 8px; }
+    .thread-head h2 { margin: 0; font-size: 24px; }
+    .thread-head p { margin: 6px 0 0; color: var(--muted); font-family: "Segoe UI", sans-serif; font-size: 14px; }
+    .thread { overflow: auto; padding: 8px 22px 28px; display: flex; flex-direction: column; gap: 12px; }
+    .bubble { max-width: min(680px, 88%); padding: 12px 14px; border-radius: 16px; line-height: 1.45; white-space: pre-wrap; }
+    .bubble.assistant { background: var(--card); border: 1px solid var(--line); }
+    .bubble.user { align-self: flex-end; background: var(--user); color: white; }
+    .who { font-family: "Segoe UI", sans-serif; font-size: 12px; margin-bottom: 4px; color: var(--muted); }
+    .bubble.user .who { color: rgba(255,255,255,0.75); }
+    .empty { color: var(--muted); padding: 28px 8px; }
+    .hidden { display: none !important; }
+    @media (max-width: 800px) {
+      .workspace { grid-template-columns: 1fr; grid-template-rows: 240px 1fr; }
+      aside { border-right: 0; border-bottom: 1px solid var(--line); }
+    }
+  </style>
+</head>
+<body>
+  <section class="login" id="login">
+    <form class="card" id="login-form">
+      <h1>MiPT chats</h1>
+      <p class="lede">Sign in to read student conversations with Mr PT, finished or still in progress.</p>
+      <label for="username">Username</label>
+      <input id="username" name="username" autocomplete="username" required>
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required>
+      <p class="error" id="login-error"></p>
+      <button class="primary" type="submit">Sign in</button>
+    </form>
+  </section>
+
+  <section class="app" id="app">
+    <header>
+      <strong>MiPT chats</strong>
+      <button class="ghost" id="logout" type="button">Sign out</button>
+    </header>
+    <div class="workspace">
+      <aside>
+        <div class="filters">
+          <input id="filter" placeholder="Filter by student, week, or status" aria-label="Filter chats">
+        </div>
+        <div class="list" id="list"></div>
+      </aside>
+      <main>
+        <div class="thread-head">
+          <h2 id="title">Select a chat</h2>
+          <p id="meta"></p>
+        </div>
+        <div class="thread" id="thread">
+          <p class="empty">Choose a session on the left.</p>
+        </div>
+      </main>
+    </div>
+  </section>
+
+  <script>
+    const login = document.getElementById("login");
+    const app = document.getElementById("app");
+    const list = document.getElementById("list");
+    const thread = document.getElementById("thread");
+    let sessions = [];
+    let activeId = "";
+
+    function showApp(on) {
+      login.classList.toggle("hidden", on);
+      app.style.display = on ? "grid" : "none";
+    }
+
+    async function signedIn() {
+      const response = await fetch("/browse/api/me");
+      return response.ok;
+    }
+
+    function statusClass(status) {
+      return "status " + (status || "").replace(/\s+/g, "_");
+    }
+
+    function renderList() {
+      const query = document.getElementById("filter").value.trim().toLowerCase();
+      list.replaceChildren();
+      const shown = sessions.filter((session) => {
+        const haystack = [session.user_id, session.week_number, session.status, session.last_message]
+          .join(" ").toLowerCase();
+        return !query || haystack.includes(query);
+      });
+      if (!shown.length) {
+        list.appendChild(Object.assign(document.createElement("p"), {
+          className: "empty",
+          textContent: "No chats yet."
+        }));
+        return;
+      }
+      for (const session of shown) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "item" + (session.session_id === activeId ? " active" : "");
+        const top = document.createElement("div");
+        top.className = "top";
+        const label = document.createElement("span");
+        label.textContent = "Student " + session.user_id + " · Week " + session.week_number;
+        const badge = document.createElement("span");
+        badge.className = statusClass(session.status);
+        badge.textContent = (session.status || "").replaceAll("_", " ");
+        top.append(label, badge);
+        const preview = document.createElement("p");
+        preview.className = "preview";
+        preview.textContent = session.last_message || (session.message_count + " messages");
+        button.append(top, preview);
+        button.addEventListener("click", () => openSession(session.session_id));
+        list.appendChild(button);
+      }
+    }
+
+    function addBubble(role, content) {
+      const bubble = document.createElement("article");
+      bubble.className = "bubble " + role;
+      const who = document.createElement("div");
+      who.className = "who";
+      who.textContent = role === "user" ? "Student" : "Mr PT";
+      const text = document.createElement("div");
+      text.textContent = content;
+      bubble.append(who, text);
+      thread.appendChild(bubble);
+    }
+
+    async function openSession(sessionId) {
+      activeId = sessionId;
+      renderList();
+      thread.replaceChildren();
+      const response = await fetch("/browse/api/session/" + encodeURIComponent(sessionId));
+      if (response.status === 401) { showApp(false); return; }
+      if (!response.ok) {
+        thread.appendChild(Object.assign(document.createElement("p"), {
+          className: "empty",
+          textContent: "This chat could not be opened."
+        }));
+        return;
+      }
+      const data = await response.json();
+      document.getElementById("title").textContent = "Week " + data.week_number;
+      document.getElementById("meta").textContent =
+        "Student " + data.user_id + " · " + (data.status || "").replaceAll("_", " ");
+      if (!data.conversation.length) {
+        thread.appendChild(Object.assign(document.createElement("p"), {
+          className: "empty",
+          textContent: "This session has no messages yet."
+        }));
+        return;
+      }
+      for (const message of data.conversation) addBubble(message.role, message.content);
+      const ideas = data.diagram_suggestions || [];
+      if (ideas.length) addBubble("assistant", "You may attach:\n" + ideas.map((item) => "- " + item).join("\n"));
+      thread.scrollTop = thread.scrollHeight;
+    }
+
+    async function loadSessions() {
+      const response = await fetch("/browse/api/sessions");
+      if (!response.ok) { showApp(false); return; }
+      const data = await response.json();
+      sessions = data.sessions || [];
+      renderList();
+    }
+
+    document.getElementById("login-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      document.getElementById("login-error").textContent = "";
+      const response = await fetch("/browse/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          username: document.getElementById("username").value,
+          password: document.getElementById("password").value
+        })
+      });
+      if (!response.ok) {
+        document.getElementById("login-error").textContent = "Those details do not match.";
+        return;
+      }
+      showApp(true);
+      await loadSessions();
+    });
+
+    document.getElementById("logout").addEventListener("click", async () => {
+      await fetch("/browse/logout", { method: "POST" });
+      sessions = [];
+      activeId = "";
+      showApp(false);
+    });
+
+    document.getElementById("filter").addEventListener("input", renderList);
+
+    signedIn().then(async (ok) => {
+      if (!ok) return;
+      showApp(true);
+      await loadSessions();
+    });
+  </script>
+</body>
+</html>

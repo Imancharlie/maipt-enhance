@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     
     # Analytics
     ENABLE_ANONYMIZED_LOGGING: bool = True
+
+    # Chat browser at /browse. Leave the password empty to keep the page locked.
+    BROWSE_USERNAME: str = ""
+    BROWSE_PASSWORD: str = ""
     
     class Config:
         env_file = ".env"

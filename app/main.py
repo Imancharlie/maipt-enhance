@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.routes import weekly
+from app.browse import router as browse_router
 from app.config import settings
 
 app = FastAPI(title="MiPT AI Enhancement Service")
@@ -25,6 +26,7 @@ app.add_middleware(
 )
 
 app.include_router(weekly.router, prefix="/api/weekly", tags=["weekly"])
+app.include_router(browse_router)
 
 @app.get("/")
 async def root():
