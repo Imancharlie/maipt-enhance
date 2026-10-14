@@ -17,8 +17,8 @@ class Settings(BaseSettings):
     # Backend
     BACKEND_URL: str = "http://localhost:8000"
     
-    # Session Settings
-    SESSION_TTL_MINUTES: int = 120  # 2 hours
+    # Older env files may still set this. Chats are kept either way.
+    SESSION_TTL_MINUTES: int = 120
     # Sessions are flushed here after every change so restarts don't wipe chats.
     SESSION_STORE_PATH: str = "data/sessions.json"
     

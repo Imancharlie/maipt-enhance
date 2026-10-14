@@ -1,9 +1,17 @@
 import re
+from datetime import datetime
+from typing import Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from app.auth import verify_api_key
 from app.schemas import AnswerRequest, EnhancementRequest, EnhancementResponse
-from app.ai import READY_FALLBACK_MESSAGE, _clean_suggestions, attach_diagram_note, claude_service
+from app.ai import (
+    READY_FALLBACK_MESSAGE,
+    _clean_suggestions,
+    attach_diagram_note,
+    claude_service,
+    visible_history,
+)
 from app.session import session_manager
 from app.analytics import analytics_tracker
 
@@ -132,6 +140,57 @@ async def answer(
         request.session_id, request.answer or "",
         confirm=request.confirm, report_data=request.report_data
     )
+
+
+def _created_at(session: dict):
+    created = session.get("created_at")
+    if isinstance(created, datetime):
+        return created.isoformat()
+    return created
+
+
+def _session_summary(session: dict) -> dict:
+    history = visible_history(session)
+    last = history[-1]["content"] if history else ""
+    if len(last) > 140:
+        last = last[:140].rstrip()
+    return {
+        "session_id": session.get("session_id"),
+        "user_id": session.get("user_id"),
+        "week_number": session.get("week_number"),
+        "status": session.get("status"),
+        "created_at": _created_at(session),
+        "message_count": len(history),
+        "last_message": last,
+    }
+
+
+@router.get("/sessions")
+async def list_sessions(
+    user_id: Optional[int] = Query(default=None),
+    authenticated: bool = Depends(verify_api_key),
+):
+    """List kept chats, newest first. Pass user_id to see one student's weeks."""
+    sessions = session_manager.list_sessions(user_id)
+    return {"sessions": [_session_summary(session) for session in sessions]}
+
+
+@router.get("/session/{session_id}/conversation")
+async def session_conversation(session_id: str, authenticated: bool = Depends(verify_api_key)):
+    """Full kept chat, finished or still in progress."""
+    session = session_manager.get_session(session_id)
+    if not session:
+        return {"exists": False, "session_id": session_id, "conversation": []}
+    return {
+        "exists": True,
+        "session_id": session_id,
+        "user_id": session.get("user_id"),
+        "week_number": session.get("week_number"),
+        "status": session.get("status"),
+        "created_at": _created_at(session),
+        "conversation": visible_history(session),
+        "enhanced_data": session.get("enhanced_data"),
+    }
 
 
 @router.get("/session/{session_id}")

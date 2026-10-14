@@ -4,7 +4,7 @@ import os
 
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
 
-from app.ai import CONVERSATION_RULES, compact_assistant, history_for_model
+from app.ai import CONVERSATION_RULES, compact_assistant, history_for_model, visible_history
 
 
 def test_rules_name_mr_pt_without_a_fixed_script():
@@ -49,3 +49,24 @@ def test_older_answers_are_folded_and_the_draft_is_dropped():
     assert "wired the panel" in sent[0]["content"]
     assert sent[0]["role"] == "user"
     assert len(blob) < len(json.dumps(history)) / 5
+
+
+def test_browsable_chat_hides_model_json_and_the_opener():
+    session = {
+        "conversation_history": [
+            {"role": "user", "content": "I just opened my report for this week."},
+            {"role": "assistant", "content": json.dumps({
+                "type": "question",
+                "ai_message": "I'm Mr PT, your personal Supervisor for this milling week.",
+                "question": "1. What did you do on Monday?",
+                "enhanced_data": {"blob": "z" * 500},
+            })},
+            {"role": "user", "content": "I faced a bracket on the mill."},
+        ]
+    }
+    shown = visible_history(session)
+    assert shown[0]["role"] == "assistant"
+    assert "Mr PT" in shown[0]["content"]
+    assert "Monday" in shown[0]["content"]
+    assert "zzzz" not in shown[0]["content"]
+    assert shown[1] == {"role": "user", "content": "I faced a bracket on the mill."}

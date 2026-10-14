@@ -3,9 +3,9 @@ import os
 import tempfile
 import threading
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from app.config import settings
 
@@ -13,8 +13,8 @@ from app.config import settings
 class SessionManager:
     """In-memory sessions that survive service restarts.
 
-    Every mutation is flushed to a JSON store on disk, so a crash, redeploy
-    or uvicorn --reload never wipes a student's conversation.
+    Every mutation is flushed to a JSON store on disk. Finished and unfinished
+    chats are kept, so a student can open them again later.
     """
 
     def __init__(self, store_path: Optional[str] = None):
@@ -50,7 +50,6 @@ class SessionManager:
                     created = datetime.utcnow()
                 session["created_at"] = created
                 self.sessions[session_id] = session
-            self._cleanup_locked()
 
     def _save_locked(self) -> None:
         payload = {}
@@ -79,18 +78,6 @@ class SessionManager:
             # Disk issues must not break live conversations; memory still works.
             pass
 
-    def _cleanup_locked(self, ttl_minutes: Optional[int] = None) -> None:
-        ttl = ttl_minutes if ttl_minutes is not None else settings.SESSION_TTL_MINUTES
-        cutoff = datetime.utcnow() - timedelta(minutes=ttl)
-        expired = [
-            session_id
-            for session_id, session in self.sessions.items()
-            if session.get("created_at") < cutoff
-        ]
-        for session_id in expired:
-            del self.sessions[session_id]
-        return bool(expired)
-
     # -- API ---------------------------------------------------------------
 
     def create_session(self, user_id: int, week_number: int, report_data: Dict = None) -> str:
@@ -106,7 +93,6 @@ class SessionManager:
                 "status": "in_progress",
                 "created_at": datetime.utcnow()
             }
-            self._cleanup_locked()
             self._save_locked()
             return session_id
 
@@ -121,10 +107,19 @@ class SessionManager:
                     self.sessions[session_id][key] = value
                 self._save_locked()
 
-    def cleanup_expired_sessions(self, ttl_minutes: int):
+    def list_sessions(self, user_id: Optional[int] = None) -> List[Dict]:
+        """Newest first. Copies so a caller cannot change the live store."""
         with self._lock:
-            self._cleanup_locked(ttl_minutes)
-            self._save_locked()
+            chosen = [
+                session
+                for session in self.sessions.values()
+                if user_id is None or session.get("user_id") == user_id
+            ]
+            chosen.sort(
+                key=lambda session: session.get("created_at") or datetime.min,
+                reverse=True,
+            )
+            return [dict(session) for session in chosen]
 
 
 session_manager = SessionManager()

@@ -145,6 +145,26 @@ def history_for_model(conversation_history: list) -> list:
     return _ensure_user_first(recent)
 
 
+def visible_history(session: dict) -> list:
+    """The chat as the student saw it, without stored model JSON."""
+    items = []
+    for message in (session or {}).get("conversation_history") or []:
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role")
+        content = message.get("content")
+        if role not in ("user", "assistant") or not isinstance(content, str):
+            continue
+        if role == "assistant":
+            content = compact_assistant(content)
+        elif _is_synthetic_user(content):
+            continue
+        content = content.strip()
+        if content:
+            items.append({"role": role, "content": content})
+    return items
+
+
 def _ensure_user_first(messages: list) -> list:
     if messages and messages[0]["role"] != "user":
         return [{"role": "user", "content": "Continue this week's report."}] + messages

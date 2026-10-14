@@ -47,18 +47,23 @@ def test_corrupt_store_does_not_crash(tmp_path):
     assert manager.get_session(session_id) is not None
 
 
-def test_expired_sessions_cleaned_on_load(store):
+def test_old_sessions_are_kept_on_load(store):
     manager = SessionManager(store_path=str(store))
     session_id = manager.create_session(user_id=1, week_number=1)
-    # Age the stored session beyond the TTL.
     payload = json.loads(store.read_text(encoding="utf-8"))
     payload[session_id]["created_at"] = (
-        datetime.utcnow() - timedelta(minutes=180)
+        datetime.utcnow() - timedelta(days=30)
     ).isoformat()
+    payload[session_id]["status"] = "in_progress"
     store.write_text(json.dumps(payload), encoding="utf-8")
 
     reborn = SessionManager(store_path=str(store))
-    assert reborn.get_session(session_id) is None
+    session = reborn.get_session(session_id)
+    assert session is not None
+    assert session["status"] == "in_progress"
+    listed = reborn.list_sessions(user_id=1)
+    assert [item["session_id"] for item in listed] == [session_id]
+    assert reborn.list_sessions(user_id=99) == []
 
 
 def test_update_missing_session_is_noop(store):

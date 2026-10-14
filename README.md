@@ -48,7 +48,7 @@ python test_vps_service.py
 - **Framework**: FastAPI (lightweight, async)
 - **AI Provider**: Anthropic Claude 3 Haiku
 - **Authentication**: Shared API key (X-API-Key header)
-- **Session Management**: In-memory with auto-cleanup (2-hour TTL)
+- **Session Management**: Kept on disk in `data/sessions.json` (finished and unfinished chats)
 - **Data Privacy**: Only anonymized metadata stored (hashed user IDs)
 
 ## Deployment
@@ -92,5 +92,5 @@ sudo systemctl status mipt-ai
 - Never commit `.env` file to version control
 - Use strong API keys
 - Only allow CORS from trusted origins (PythonAnywhere backend)
-- Sessions auto-expire after 2 hours
+- Chats are kept so a student can reopen a finished or unfinished week
 - User IDs are hashed before logging (no personal data stored)
