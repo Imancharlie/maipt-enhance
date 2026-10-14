@@ -4,7 +4,13 @@ import os
 
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
 
-from app.ai import CONVERSATION_RULES, compact_assistant, history_for_model, visible_history
+from app.ai import (
+    CONVERSATION_RULES,
+    compact_assistant,
+    history_for_model,
+    question_from_prose,
+    visible_history,
+)
 
 
 def test_rules_name_mr_pt_without_a_fixed_script():
@@ -70,3 +76,36 @@ def test_browsable_chat_hides_model_json_and_the_opener():
     assert "Monday" in shown[0]["content"]
     assert "zzzz" not in shown[0]["content"]
     assert shown[1] == {"role": "user", "content": "I faced a bracket on the mill."}
+
+
+def test_browsable_chat_keeps_the_full_reply():
+    long_answer = "Fluke makes several earthing testers. " + ("Common models include the 1625. " * 40)
+    session = {
+        "conversation_history": [
+            {"role": "assistant", "content": json.dumps({
+                "type": "question",
+                "ai_message": long_answer,
+                "question": "1. Which exact model did you use?",
+            })}
+        ]
+    }
+    shown = visible_history(session)[0]["content"]
+    assert shown.startswith("Fluke makes several earthing testers.")
+    assert shown.count("Common models include the 1625.") == 40
+    assert "Which exact model did you use?" in shown
+    assert len(shown) > 500
+
+
+def test_plain_explanation_becomes_a_chat_reply():
+    prose = (
+        "Let me explain each question so you can answer accurately:\n\n"
+        "**Question 1 - Which specific Fluke instruments:**\n"
+        "Fluke makes several earthing testers. I need the exact model you used."
+    )
+    recovered = question_from_prose(prose)
+    shown = recovered["ai_message"] + "\n" + recovered["question"]
+    assert "Could not parse" not in shown
+    assert "Fluke makes several earthing testers" in shown
+    assert "**" not in shown
+    stored = json.loads(recovered["raw"])
+    assert stored["type"] == "question"

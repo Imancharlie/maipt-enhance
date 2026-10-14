@@ -21,7 +21,7 @@ MAX_RECENT_MESSAGES = 10
 # Static instructions. Kept short because they are sent on every turn.
 CONVERSATION_RULES = """You are Mr PT, the student's personal Supervisor for university practical training (PT). Guide this weekly report with them, prepare it together, and remind them of important points about their PT. If they ask you to clarify a machine, tool, or step, explain it so they can implement it.
 
-Reply with one JSON object only. No markdown.
+Reply with one JSON object only. No markdown, even when you explain a tool or method. Put that explanation in ai_message.
 
 Still gathering facts:
 {"type":"question","ai_message":"...","question":"1. ...\\n2. ..."}
@@ -87,21 +87,68 @@ def _is_synthetic_user(text: str) -> bool:
     return any(lowered.startswith(prefix) for prefix in _SYNTHETIC_USER_PREFIXES)
 
 
-def compact_assistant(content: str) -> str:
-    """Drop stored JSON (especially drafted reports) before the next model call."""
-    try:
-        parsed = _parse_json(content)
-    except ValueError:
-        return " ".join((content or "").split())[:400]
-
+def _assistant_text(parsed: dict) -> str:
     kind = parsed.get("type")
     if kind == "question":
         ai_message = (parsed.get("ai_message") or "").strip()
         question = (parsed.get("question") or "").strip()
-        return f"{ai_message}\n{question}".strip()[:500]
+        if ai_message and question and question not in ai_message:
+            return f"{ai_message}\n\n{question}"
+        return ai_message or question
     if kind in ("ready", "complete"):
-        return ((parsed.get("confirmation_message") or "Draft ready.").strip())[:300]
+        return (parsed.get("confirmation_message") or "Draft ready.").strip()
+    return ""
+
+
+def compact_assistant(content: str) -> str:
+    """Short text for the next model call. Drafted reports stay out."""
+    try:
+        parsed = _parse_json(content)
+    except ValueError:
+        return " ".join((content or "").split())[:400]
+    text = _assistant_text(parsed)
+    if text:
+        limit = 300 if parsed.get("type") in ("ready", "complete") else 500
+        return text[:limit]
     return " ".join((content or "").split())[:400]
+
+
+def display_assistant(content: str) -> str:
+    """Full reply for the chat browser. Nothing is cut off."""
+    try:
+        parsed = _parse_json(content)
+    except ValueError:
+        return (content or "").strip()
+    return _assistant_text(parsed) or (content or "").strip()
+
+
+_MARKDOWN_BOLD = re.compile(r"\*\*|__")
+_MARKDOWN_HEADING = re.compile(r"^#{1,6}\s*", re.MULTILINE)
+
+
+def question_from_prose(text: str) -> dict:
+    """Turn a plain explanation into a normal chat reply.
+
+    Claude sometimes answers a student's question in prose instead of JSON.
+    That reply is still worth showing. It is not an error.
+    """
+    cleaned = _MARKDOWN_HEADING.sub("", _MARKDOWN_BOLD.sub("", text or "")).strip()
+    if len(cleaned) < 10:
+        raise ValueError("Claude returned an empty reply")
+    pieces = re.split(r"(?<=[.!?])\s+", cleaned, maxsplit=1)
+    if len(pieces) == 2 and len(pieces[0]) <= 240:
+        ai_message, question = pieces
+    else:
+        ai_message, question = cleaned, cleaned
+    raw = json.dumps(
+        {"type": "question", "ai_message": ai_message, "question": question},
+        ensure_ascii=False,
+    )
+    return {
+        "ai_message": ai_message,
+        "question": question,
+        "raw": raw,
+    }
 
 
 def history_for_model(conversation_history: list) -> list:
@@ -156,7 +203,7 @@ def visible_history(session: dict) -> list:
         if role not in ("user", "assistant") or not isinstance(content, str):
             continue
         if role == "assistant":
-            content = compact_assistant(content)
+            content = display_assistant(content)
         elif _is_synthetic_user(content):
             continue
         content = content.strip()
@@ -302,7 +349,19 @@ class ClaudeService:
                 system += "\nReply type ready now, using only the facts you have."
 
             text, tokens_used = self._create_message(system, messages)
-            parsed = _parse_json(text)
+            try:
+                parsed = _parse_json(text)
+            except ValueError:
+                recovered = question_from_prose(text)
+                return {
+                    "success": True,
+                    "type": "question",
+                    "question": recovered["question"],
+                    "ai_message": recovered["ai_message"],
+                    "suggestions": None,
+                    "raw": recovered["raw"],
+                    "tokens_used": tokens_used,
+                }
 
             response_type = parsed.get("type")
             if response_type in ("complete", "ready"):
